@@ -98,6 +98,21 @@ void kernel_entry(void) {
     );
 }
 
+extern char __free_ram[], __free_ram_end[];
+
+paddr_t alloc_pages(uint32_t n) {
+    // 静态变量，用于存储下一个可用的物理页地址, 初始化为__free_ram
+    static paddr_t next_paddr = (paddr_t)__free_ram;
+    paddr_t paddr = next_paddr;
+    next_paddr += n * PAGE_SIZE;
+
+    if (next_paddr > (paddr_t)__free_ram_end) {
+        PANIC("out of memory");
+    }
+    memset((void*)paddr, 0, n * PAGE_SIZE);
+    return paddr;
+}
+
 
 
 struct sbiret sbi_call(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5, long fid, long eid) {
@@ -126,10 +141,16 @@ void kernel_main(void) {
     memset(__bss, 0, __bss_end - __bss);
     
     // 设置内核的入口地址
-    WRITE_CSR(stvec, (uint32_t)kernel_entry);
-    __asm__ __volatile__("unimp");
+    // WRITE_CSR(stvec, (uint32_t)kernel_entry);
+    // __asm__ __volatile__("unimp");
     // PANIC("booted!");
     // printf("unreachable here!\n");
+
+    paddr_t paddr0 = alloc_pages(2);
+    paddr_t paddr1 = alloc_pages(1);
+    printf("alloc_pages test: paddr0=%x\n", paddr0);
+    printf("alloc_pages test: paddr1=%x\n", paddr1);
+    PANIC("booted!");
 }
 
 
