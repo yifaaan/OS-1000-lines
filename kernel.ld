@@ -22,15 +22,16 @@ SECTIONS {
         *(.data .data.*);
     }
 
-    # 未初始化数据段
+    # 未初始化数据段, 启动时需要清零
     .bss : ALIGN(4) {
         __bss = .;
         *(.bss .bss.* .sbss .sbss.*);
         __bss_end = .;
     }
 
-    # 栈底
+    # 设置栈
     . = ALIGN(4);
     . += 128 * 1024; /* 128KB */
+    # 栈结束为止
     __stack_top = .;
 }
