@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common.h"
+
 #define PANIC(fmt, ...)                                                        \
     do {                                                                         \
         printf("PANIC: %s:%d: " fmt "\n", __FILE__, __LINE__, ##__VA_ARGS__);      \
@@ -61,3 +62,18 @@ struct trap_frame {
         __asm__ __volatile__("csrw " #reg ", %0" :: "r"(__tmp)); \
     } while (0)
 
+
+// 进程最大数量
+#define PROCS_MAX 8
+// 未使用的进程
+#define PROC_UNUSED 0
+// 可运行进程
+#define PROC_RUNNABLE 1
+
+struct process {
+    int pid;
+    int state;
+    vaddr_t sp;
+    // 内核栈
+    uint8_t stack[8192];
+};
