@@ -74,6 +74,8 @@ struct process {
     int pid;
     int state;
     vaddr_t sp;
+    // 页表
+    uint32_t* page_table;
     // 内核栈
     uint8_t stack[8192];
 };
