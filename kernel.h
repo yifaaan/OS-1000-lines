@@ -77,3 +77,16 @@ struct process {
     // 内核栈
     uint8_t stack[8192];
 };
+
+// 页表模式, single bit in the satp register
+#define SATP_SV32 (1u << 31)
+// 页表是否有效
+#define PAGE_V (1 << 0)
+// 读权限
+#define PAGE_R (1 << 1)
+// 写权限
+#define PAGE_W (1 << 2)
+// 执行权限
+#define PAGE_X (1 << 3)
+// 用户权限
+#define PAGE_U (1 << 4)
