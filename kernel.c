@@ -2,9 +2,11 @@
 #include "common.h"
 
 
-// 导入链接器中的符号
+// 导入kernel链接器中的符号
 extern char __bss[], __bss_end[], __stack_top[];
 
+// 导入shell.bin.o链接器中的符号
+extern char _binary_shell_bin_start[], _binary_shell_bin_size[];
 
 /// 异常处理程序保存CSR寄存器
 void handle_trap(void) {
@@ -212,7 +214,23 @@ void map_page(uint32_t *table1, uint32_t vaddr, paddr_t paddr, uint32_t flags) {
 struct process procs[PROCS_MAX];
 extern char __kernel_base[];
 
-struct process* create_process(uint32_t pc) {
+
+__attribute__((naked))
+void user_entry(void) {
+    __asm__ __volatile__(
+        "csrw sepc, %[sepc]\n"
+        "csrw sstatus, %[sstatus]\n"
+        "sret\n"
+        :
+        : [sepc] "r" (USER_BASE),
+          [sstatus] "r" (SSTATUS_SPIE)
+    );
+}
+
+/// 创建一个进程
+/// @param image 进程的二进制文件
+/// @param image_size 进程的二进制文件大小
+struct process* create_process(const void* image, size_t image_size) {
     // 遍历进程控制块数组，找到一个未使用的进程控制块
     struct process* proc = NULL;
     int i;
@@ -250,12 +268,23 @@ struct process* create_process(uint32_t pc) {
     // s0 = 0
     *--sp = 0;
     // ra = pc
-    *--sp = (uint32_t)pc;
+    *--sp = (uint32_t)user_entry;
 
     uint32_t* page_table = (uint32_t*)alloc_pages(1);
     for (paddr_t paddr = (paddr_t)__kernel_base; paddr < (paddr_t)__free_ram_end; paddr += PAGE_SIZE) {
         map_page(page_table, paddr, paddr, PAGE_R | PAGE_W | PAGE_X);
     }
+
+    for (uint32_t off = 0; off < image_size; off += PAGE_SIZE) {
+        paddr_t page = alloc_pages(1);
+        // 最后一段数据可能会小于PAGE_SIZE
+        size_t remaining = image_size - off;
+        size_t copy_size = PAGE_SIZE <= remaining ? PAGE_SIZE : remaining;
+
+        memcpy((void*)page, (void*)(image + off), copy_size);
+        map_page(page_table, USER_BASE + off, page, PAGE_U | PAGE_R | PAGE_W | PAGE_X);
+    }
+
 
     proc->pid = i + 1;
     proc->state = PROC_RUNNABLE;
@@ -334,11 +363,10 @@ void kernel_main(void) {
     // PANIC("booted!");
     // printf("unreachable here!\n");
 
-    idle_proc = create_process((uint32_t)NULL);
+    idle_proc = create_process(NULL, 0);
     idle_proc->pid = -1;
     current_proc = idle_proc;
-    proc_a = create_process((uint32_t)proc_a_entry);
-    proc_b = create_process((uint32_t)proc_b_entry);
+    create_process(_binary_shell_bin_start, (size_t)_binary_shell_bin_size);
     yield();
     PANIC("switched to idle process!");
 }
