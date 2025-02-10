@@ -33,3 +33,7 @@ void printf(const char* fmt, ...);
 
 
 #define PAGE_SIZE 4096
+
+
+#define SYS_PUTCHAR 1
+#define SYS_GETCHAR 2

@@ -8,15 +8,19 @@ extern char __bss[], __bss_end[], __stack_top[];
 // 导入shell.bin.o链接器中的符号
 extern char _binary_shell_bin_start[], _binary_shell_bin_size[];
 
-/// 异常处理程序保存CSR寄存器
-void handle_trap(void) {
-    uint32_t scause = READ_CSR(scause);
-    uint32_t stval = READ_CSR(stval);
-    // 存储发生异常的指令的地址
-    uint32_t user_pc = READ_CSR(sepc);
+struct process procs[PROCS_MAX];
+extern char __kernel_base[];
 
-    PANIC("unexpected trap scause=%x, stval=%x, sepc=%x\n", scause, stval, user_pc);
-}
+
+
+// 当前进程
+struct process* current_proc;
+// 空闲进程
+struct process* idle_proc;
+
+
+
+
 
 
 /// 内核入口
@@ -184,8 +188,110 @@ struct sbiret sbi_call(long arg0, long arg1, long arg2, long arg3, long arg4, lo
     return (struct sbiret){a0, a1};
 } 
 
+void yield(void) {
+    // 找到下一个可运行的进程
+    struct process* next = idle_proc;
+    for (int i = 0; i < PROCS_MAX; i++) {
+        struct process* proc = &procs[(current_proc->pid + i) % PROCS_MAX];
+        if (proc->state == PROC_RUNNABLE && proc->pid > 0) {
+            next = proc;
+            break;
+        }
+    }
+
+    if (next == current_proc) return;
+
+    __asm__ __volatile__(
+        "sfence.vma\n"
+        "csrw satp, %[satp]\n"
+        "sfence.vma\n"
+        "csrw sscratch, %[sscratch]\n"
+        :
+        : [satp] "r" (SATP_SV32 | ((uint32_t)next->page_table / PAGE_SIZE)),
+        [sscratch] "r" ((uint32_t)&next->stack[sizeof(next->stack)])
+    );
+    struct process* prev = current_proc;
+    current_proc = next;
+    switch_context(&prev->sp, &current_proc->sp);
+}
+
+
 void putchar(char ch) {
     sbi_call(ch, 0, 0, 0, 0, 0, 0, 1);
+}
+
+long getchar(void) {
+    struct sbiret ret = sbi_call(0, 0, 0, 0, 0, 0, 0, 2);
+    return ret.value;
+}
+
+
+void handle_syscall(struct trap_frame* tf) {
+    switch (tf->a3) {
+        case SYS_PUTCHAR:
+            putchar(tf->a0);
+            break;
+        case SYS_GETCHAR:
+            while (true) {
+                long ch = getchar();
+                if (ch >= 0) {
+                    tf->a0 = ch;
+                    break;
+                }
+                yield();
+            }
+            break;
+        default:
+            PANIC("a0 = %x, a1 = %x, a2 = %x, a3 = %x, a4 = %x, a5 = %x, a6 = %x, a7 = %x\n", tf->a0, tf->a1, tf->a2, tf->a3, tf->a4, tf->a5, tf->a6, tf->a7);
+            PANIC("unexpected syscall a3 = %x\n", tf->a3);
+    }
+}
+
+/// 异常处理程序保存CSR寄存器
+void handle_trap(struct trap_frame* tf) {
+    uint32_t scause = READ_CSR(scause);
+    uint32_t stval = READ_CSR(stval);
+    // 存储发生异常的指令的地址
+    uint32_t user_pc = READ_CSR(sepc);
+
+    if (scause == SCAUSE_ECALL) {
+        // 系统调用
+        handle_syscall(tf);
+        user_pc += 4;
+    } else if (scause == 0xf) {
+        printf("Store page fault at address %x\n", stval);
+        printf("Current process: pid=%d\n", current_proc->pid);
+        printf("Fault address details:\n");
+        printf("  - Base offset from USER_BASE: %x\n", stval - USER_BASE);
+        printf("  - Page number: %x\n", stval >> 12);
+        
+        // 检查页表项
+        uint32_t vpn1 = (stval >> 22) & 0x3ff;
+        uint32_t vpn0 = (stval >> 12) & 0x3ff;
+        uint32_t* table1 = current_proc->page_table;
+        
+        printf("Page table details:\n");
+        printf("  - VPN1: %x\n", vpn1);
+        printf("  - VPN0: %x\n", vpn0);
+        printf("  - Level 1 PTE: %x\n", table1[vpn1]);
+        
+        if ((table1[vpn1] & PAGE_V) == 0) {
+            printf("Level 1 page table entry is invalid\n");
+        } else {
+            uint32_t* table0 = (uint32_t*)((table1[vpn1] >> 10) * PAGE_SIZE);
+            uint32_t pte = table0[vpn0];
+            printf("  - Level 0 PTE: %x\n", pte);
+        }
+
+        // 打印用户程序的映射信息
+        printf("Process memory mapping:\n");
+        printf("  - Program start: %x\n", USER_BASE);
+        printf("  - Stack top: %x\n", 0x1800000);
+        PANIC("Store page fault");  
+    } else {
+        PANIC("unexpected trap scause=%x, stval=%x, sepc=%x\n", scause, stval, user_pc);
+    }
+    WRITE_CSR(sepc, user_pc);
 }
 
 /// 映射页表，将虚拟地址vaddr映射到物理地址paddr，并设置flags
@@ -210,9 +316,6 @@ void map_page(uint32_t *table1, uint32_t vaddr, paddr_t paddr, uint32_t flags) {
 }
 
 
-
-struct process procs[PROCS_MAX];
-extern char __kernel_base[];
 
 
 __attribute__((naked))
@@ -283,6 +386,8 @@ struct process* create_process(const void* image, size_t image_size) {
 
         memcpy((void*)page, (void*)(image + off), copy_size);
         map_page(page_table, USER_BASE + off, page, PAGE_U | PAGE_R | PAGE_W | PAGE_X);
+        printf("Mapped program page: vaddr=%x, paddr=%x, size=%x\n", 
+               USER_BASE + off, page, copy_size);
     }
 
 
@@ -300,37 +405,9 @@ void delay(void) {
     }
 }
 
-// 当前进程
-struct process* current_proc;
-// 空闲进程
-struct process* idle_proc;
 
-void yield(void) {
-    // 找到下一个可运行的进程
-    struct process* next = idle_proc;
-    for (int i = 0; i < PROCS_MAX; i++) {
-        struct process* proc = &procs[(current_proc->pid + i) % PROCS_MAX];
-        if (proc->state == PROC_RUNNABLE && proc->pid > 0) {
-            next = proc;
-            break;
-        }
-    }
 
-    if (next == current_proc) return;
 
-    __asm__ __volatile__(
-        "sfence.vma\n"
-        "csrw satp, %[satp]\n"
-        "sfence.vma\n"
-        "csrw sscratch, %[sscratch]\n"
-        :
-        : [satp] "r" (SATP_SV32 | ((uint32_t)next->page_table / PAGE_SIZE)),
-        [sscratch] "r" ((uint32_t)&next->stack[sizeof(next->stack)])
-    );
-    struct process* prev = current_proc;
-    current_proc = next;
-    switch_context(&prev->sp, &current_proc->sp);
-}
 
 struct process* proc_a;
 struct process* proc_b;
